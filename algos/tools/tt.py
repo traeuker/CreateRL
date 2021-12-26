@@ -11,3 +11,14 @@ def tt(ndarray):
         return Variable(torch.from_numpy(ndarray).float().cuda(), requires_grad=False)
     else:
         return Variable(torch.from_numpy(ndarray).float(), requires_grad=False)
+
+
+def decay(current_timestep, decay_length = 10_000, initial_eps = 1, final_eps = 0.1):
+    
+    if current_timestep < decay_length:
+        eps = current_timestep * (final_eps-initial_eps) / decay_length + initial_eps
+    else:
+        eps = final_eps
+
+    return eps
+
