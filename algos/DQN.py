@@ -1,19 +1,14 @@
-# Thanks to: https://pytorch.org/tutorials/intermediate/reinforcement_q_learning.html 
-
-import copy
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.autograd import Variable
+
 import gym
 import wandb
+import time
 
-from tools import ReplayBuffer, tt, decay
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-
-WANDB = 0
 
 class Q(nn.Module):
     """ Fully connected NN """
@@ -33,36 +28,31 @@ class Q(nn.Module):
         return x
 
 class vision_Q(nn.Module):
-    """ Convolutional NN - WIP """
+    """ 
+    Convolutional NN - WIP 
+    """
     def __init__(self, config):
         super(vision_Q, self).__init__()
 
+        self.conv1 = nn.Conv2d(in_channels=1, out_channels=config['l1_size'], kernel_size=8)#, stride=4) 
+        self.conv2= nn.Conv2d(in_channels=config['l1_size'], out_channels=config['l2_size'] , kernel_size=4, stride=1, padding=1)
+        
+        self.fc = nn.Linear(16*12*12,config['action_space'])
+        self.pool = nn.MaxPool2d(8)
 
-        self.conv1 = nn.Conv2d(1, 4, kernel_size=3, stride=1, padding=1)
-        self.bn1 = nn.BatchNorm2d(4)
-        self.relu1 = nn.ReLU(inplace=True)
-        self.maxpool1 = nn.MaxPool2d(kernel_size=2, stride=2)
-
-        self.conv2= nn.Conv2d(4, 4, kernel_size=3, stride=1, padding=1)
-        self.bn2 = nn.BatchNorm2d(4)
-        self.relu2 = nn.ReLU(inplace=True)
-        self.maxpool2 = nn.MaxPool2d(kernel_size=2, stride=2)
-
-        self.fc = nn.Linear(4*7*7,10)
+        self.relu = nn.ReLU()
 
     def forward(self, state):
         x = self.conv1(state)
-        x = self.bn1(x)
-        x = self.relu1(x)
-        x = self.maxpool1(x)
+        x = self.relu(x)
         x = self.conv2(x)
-        x = self.bn2(x)
-        x = self.relu2(x)
-        x = self.maxpool2(x)
+        x = self.pool(x)
+        x = self.relu(x)
         x = x.view(x.size(0), -1)
         x = self.fc(x)
-
         return x
+
+
 
 class DQN():
 
@@ -71,98 +61,140 @@ class DQN():
         
         if config['vision']:
             self.q = vision_Q(self.config).to(device)
+            self.q_target = vision_Q(self.config).to(device)
         else: 
             self.q = Q(self.config).to(device)
+            self.q_target = Q(self.config).to(device) 
 
-        self.q_target = copy.deepcopy(self.q).to(device)
+        self.q_target.load_state_dict(self.q.state_dict())
+        self.q_target.eval()
+
         self.loss_function = nn.SmoothL1Loss()
         self.optimizer = torch.optim.Adam(self.q.parameters(), lr=config['lr'])
 
-        self.replay_buffer = ReplayBuffer(config)
-
-    def get_action(self, state, epsilon):
-        # print(self.q(state[None, :]))
-        
-        if epsilon > np.random.random():
-            a = env.action_space.sample()
-        else:
-            with torch.no_grad():
-                a = torch.argmax(self.q(tt(state))).numpy().tolist()
-        return a
+        self.replay_buffer = ReplayBuffer(config)      
     
     def eval(self, env, render = 0):
         s = env.reset()
+        if self.config['vision']:
+            s = transform_visual_input(s)
         total_reward = 0
-        action_array = []
-        while True:
-            a = self.get_action(s, 0) 
-            action_array.append(a)
+        trajectory = []
+        for _ in range(self.config['eval_episode_length']):
+            with torch.no_grad(): 
+                a = torch.argmax(self.q(tt(s))).numpy().tolist()
+            trajectory.append(a)
             s, r, d, _ = env.step(a) 
+            if self.config['vision']:
+                s = transform_visual_input(s)
             if render:
                 env.render()
             total_reward += r
-            if d:
+            if d: 
                 env.reset()  
                 break
         if render:
-            env.close()
-        # print(f"{action_array}")
-        if WANDB:
-            wandb.log({'mean_reward_test': total_reward})
-        pass
+            pass
+            # env.close()
+        print(f"{trajectory}")
+        if self.config['WANDB']:
+            wandb.log({'total_reward_during_eval_episode': total_reward})
+        return total_reward
+      
+    def update(self, t):
+        self.config['updates_counter'] += 1
 
-    def update(self):
-        b_s, b_a, b_ns, b_r, b_tf = self.replay_buffer.random_batch()
-
-        max_q_next = torch.max(self.q(tt(b_ns)),1) 
-
-        y = tt(b_r) + tt(1 - b_tf) * self.config['gamma'] * max_q_next.values # target
-
-        q = self.q(tt(b_s)).gather(1, tt(b_a).long().unsqueeze(1))
-
-        q = torch.squeeze(q,1)
-
-        loss = self.loss_function(y, q)
-
-        if WANDB:
-            wandb.log({'mean_q': torch.mean(q).detach().numpy()}) 
-            wandb.log({'loss': loss}) 
+        b_s, b_a, b_ns, b_r, b_tf = self.replay_buffer.get_batch()
+        b_s, b_a, b_ns, b_r, b_tf = tt(b_s), tt(b_a), tt(b_ns), tt(b_r), tt(b_tf) # casting everything as Tensor 
         
+        if self.config['vision']:
+            b_s = b_s.reshape(256,1,56,56)
+            b_ns = b_ns.reshape(256,1,56,56)
+
+        with torch.no_grad():
+            next_q_values = self.q_target(b_ns)            
+            max_q_next_target, _ = torch.max(next_q_values, 1)
+
+            y = b_r + (1 - b_tf) * self.config['gamma'] * max_q_next_target 
+
+        # We take the Q values of state-action pairs. This is done by gathering the Q values 
+        # of the states indexed by the actions.
+        q = self.q(b_s).gather(1, b_a.long().unsqueeze(1))
+
+        q = torch.squeeze(q, 1)
+
+        loss = self.loss_function(q, y)#.detach())
+
         self.optimizer.zero_grad()
         loss.backward()
         self.optimizer.step()
- 
+
+        if self.config['WANDB']:
+            wandb.log({'mean_q': q.mean().detach().numpy()}) 
+            wandb.log({'mean_target_q': max_q_next_target.mean().detach().numpy()}) 
+            wandb.log({'loss': loss}) 
+        
+        if (self.config['updates_counter'] % self.config['target_net_update_freq']) == 0:
+            network_update(self.q_target, self.q, 1)        
     
     def run(self, env: None):   
-        s = env.reset()
-        
-        for t in range(self.config['training_steps']):
-            
-            epsilon = decay(t)
+        print('Using {} as Q-Network\n'.format(str(self.q)))
+        print('Config: {}\n{}'.format(str(self.config), '#' * 80))
 
-            a = self.get_action(s, epsilon)
+        s = env.reset()
+        if self.config['vision']:
+            s = transform_visual_input(s)
+        eval_reward = []
+
+        timesteps_per_episode = 0
+        for t in range(self.config['training_steps']):
+            timesteps_per_episode += 1 
+            epsilon = decay(t, decay_length=self.config['epsilon_decay_length'])
+
+            if self.config['WANDB']:
+                wandb.log({'epsilon': epsilon}) 
+            
+            if epsilon > np.random.random():
+                a = env.action_space.sample()
+            else:
+                with torch.no_grad():
+                    a = torch.argmax(self.q(tt(s))).numpy().tolist()
+                    pass
 
             ns, r, d, _ = env.step(a) 
 
+            if self.config['vision']:
+                ns = transform_visual_input(ns)
+
             self.replay_buffer.add_data(s, a, ns, r, d)
 
-            if t > self.config['training_start']:
-                self.update()
+            if t > self.config['training_start'] and (t % self.config['update_every']) == 0:
+                self.update(t)
 
-            # testing on every other timestep
+            # testing on every xth timestep
             if t % self.config['eval_every'] == 0:
-                self.eval(env)
+                rew = self.eval(env, render=1)
+                eval_reward.append(rew)
 
-            if d: 
+            if d or timesteps_per_episode > self.config['training_episode_length']: 
+                timesteps_per_episode = 0 
                 s = env.reset()
+                if self.config['vision']:
+                    s = transform_visual_input(s)
             else:
                 s = ns
-        return a
+        _ = self.eval(env, render=1) 
+        return np.mean(eval_reward)
 
 
 if __name__ == '__main__':
-    
-    env_name = 'CartPole-v0'
+
+    from tools import ReplayBuffer, tt, decay, get_default_config, network_update, transform_visual_input
+    from gym_minigrid.wrappers import *
+        
+    start_time = time.time()
+
+    env_name = 'CartPole-v0' # 'CartPole-v0' or 'MiniGrid-Empty-8x8-v0'
     env = gym.make(env_name)
 
     seed = 0
@@ -170,30 +202,29 @@ if __name__ == '__main__':
     np.random.seed(seed)
     env.seed(seed)
 
-    config= {
+    config = get_default_config()
+    environment_details = {
+        'env': env.spec.id,
+        'WANDB': 0, # Logging on weights and biases
+
         'state_space': env.observation_space.shape[0],
+        # 'state_space': (env.observation_space.sample()['image']).shape,
         'action_space': env.action_space.n,
-        'vision': 0, # When state-space consists of pixels 
+        'vision': 0, # If state-space consists of pixels 
+        'seed': seed,
+    }
+    config.update(environment_details)
+    
+    if config['vision']:
+        env = RGBImgPartialObsWrapper(env) # Get pixel observations
+        env = ImgObsWrapper(env) 
 
-        'l1_size': 32,
-        'l2_size': 16,
-        'epsilon': 0.1,
-        'replay_buffer_size': 2_560,
-        'batch_size': 256,
-        'gamma': 0.99,
-        'lr':3e-4,
-
-        'training_steps': 100_000,
-        'training_start': 1_000,
-        'eval_every': 1_000
-        }
-
-    if WANDB:
+    if config['WANDB']:
         wandb.init(project=env_name, config=config)
-    # wandb.config = config
     algo = DQN(config)
-
-
-    q_val = algo.run(env)
+    eval_reward = algo.run(env)
+    print("Average performance: %0.1f \n" %(eval_reward))
+    print("Process finished --- %s seconds ---" % (time.time() - start_time))
 else:
-    print("Package loaded.")
+    from tools import ReplayBuffer, tt, decay, network_update
+ 

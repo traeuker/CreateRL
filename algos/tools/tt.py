@@ -1,12 +1,13 @@
 import torch
 from torch.autograd import Variable
 
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
 def tt(ndarray):
     """
     Helper Function to cast observation to correct type/device
     """
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-
+    
     if device.type == "cuda":
         return Variable(torch.from_numpy(ndarray).float().cuda(), requires_grad=False)
     else:
@@ -22,3 +23,20 @@ def decay(current_timestep, decay_length = 10_000, initial_eps = 1, final_eps = 
 
     return eps
 
+
+def network_update(target, source, tau = 1):
+    """
+    Simple Helper for updating target-network parameters
+    :param target: target network
+    :param source: policy network
+    :param tau: weight to regulate how strongly to update (1 -> copy over weights)
+    """
+    for target_param, param in zip(target.parameters(), source.parameters()):
+        target_param.data.copy_(target_param.data * (1.0 - tau) + param.data * tau)
+
+
+def transform_visual_input(input):
+    output= (input[:,:,0]+input[:,:,1]+input[:,:,2])/255
+    # output = torch.Tensor(output)
+    output = output[None, None, :]
+    return output 
