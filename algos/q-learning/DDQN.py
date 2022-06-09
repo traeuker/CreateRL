@@ -5,6 +5,7 @@ import torch.nn as nn
 import gym
 import wandb
 import time
+
 from DQN import DQN, Q, vision_Q
 from tools import ReplayBuffer, tt, get_default_config, network_update
 
@@ -80,10 +81,18 @@ class DDQN(DQN):
             network_update(self.q_target, self.q, 1)
     
 if __name__ == '__main__':
+    import sys 
+    sys.path.append("env")
+    sys.path.append("algos")
+    
     start_time = time.time()
 
-    env_name = 'CartPole-v0' # 'CartPole-v0' or 'Acrobot-v1'
-    env = gym.make(env_name)
+    from grid import grid
+
+    env_name = 'GridEnv' # 'CartPole-v0' or 'Acrobot-v1'
+    #env = gym.make(env_name)
+
+    env = grid(size =(6,6),vision=0)
 
     seed = 0
     torch.manual_seed(seed)
@@ -93,11 +102,12 @@ if __name__ == '__main__':
     config = get_default_config()
     environment_details = {
         'env': env.spec.id,
-        'WANDB': 0, # Logging on weights and biases
+        'WANDB': 1, # Logging on weights and biases
 
         'state_space': env.observation_space.shape[0],
         'action_space': env.action_space.n,
         'vision': 0, # If state-space consists of pixels 
+
         'seed': seed,
     }
     config.update(environment_details)
@@ -106,7 +116,7 @@ if __name__ == '__main__':
         wandb.init(project=env_name, config=config)
     algo = DDQN(config)
 
-    eval_reward = algo.run(env)
+    eval_reward = algo.run(env, render=0)
     print("Average performance: %0.1f \n" %(eval_reward))
     print("Process finished --- %s seconds ---" % (time.time() - start_time))
 

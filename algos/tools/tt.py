@@ -36,7 +36,10 @@ def network_update(target, source, tau = 1):
 
 
 def transform_visual_input(input):
-    output= (input[:,:,0]+input[:,:,1]+input[:,:,2])/255
-    # output = torch.Tensor(output)
-    output = output[None, None, :]
-    return output 
+    if input.shape == (256, 256, 3):
+        output= (input[:,:,0]+input[:,:,1]+input[:,:,2])/255
+        # output = torch.Tensor(output)
+        output = output[None, None, :]
+        return output 
+    output = input[None, None, :]
+    return output
