@@ -12,8 +12,6 @@ sys.path.append("env")
 sys.path.append("algos")
 
 from tools import tt, get_default_config, TrajectoryBuffer
-from gym_minigrid.wrappers import *
-
 from grid import grid
 
 # For issue: 
@@ -23,6 +21,7 @@ multiprocessing.Queue(1000)
 ### 
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
 
 class Policy_Net(nn.Module):
     """ Fully connected NN """

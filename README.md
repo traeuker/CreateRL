@@ -15,4 +15,4 @@ Prioritized Experience Replay (PER) | [Prioritized Experience Replay](https://ar
 ---|_Policy Gradient Methods_ |---
 (Vanilla) Policy Gradient | [High-Dimensional Continuous Control Using Generalized Advantage Estimation](https://arxiv.org/abs/1506.02438) |
 ---|_Other Methods_|---
-Simple Random Search | [Simple random search provides a competitive approach to reinforcement learning](https://arxiv.org/abs/1803.07055) | Next
+Augmented Random Search | [Simple random search provides a competitive approach to reinforcement learning](https://arxiv.org/abs/1803.07055) | Next
